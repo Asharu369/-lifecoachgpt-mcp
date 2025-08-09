@@ -1,5 +1,6 @@
 import os
 import json
+import re
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -17,29 +18,68 @@ if not GEMINI_KEY:
 genai.configure(api_key=GEMINI_KEY)
 
 # =============================
-# FastAPI app
+# FastAPI app with CORS enabled
 # =============================
 app = FastAPI(title="LifeCoachGPT API")
 
-# Allow all origins for now (you can restrict later to your Streamlit app URL)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # you can restrict this to your Streamlit URL
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# =============================
-# Daily Boost Endpoint
-# =============================
+# -------- Helper: call Gemini and ensure JSON output --------
+def get_gemini_json(prompt: str):
+    try:
+        model = genai.GenerativeModel("gemini-2.0-flash")
+        resp = model.generate_content(prompt)
+        text_output = resp.candidates[0].content.parts[0].text.strip()
+
+        # Extract JSON if wrapped in markdown or text
+        match = re.search(r"\{.*\}", text_output, re.DOTALL)
+        if match:
+            text_output = match.group(0)
+
+        try:
+            return json.loads(text_output)
+        except json.JSONDecodeError:
+            # fallback default
+            return {
+                "insight": "Keep pushing forward — progress builds momentum.",
+                "micro_challenge": "Do one small task right now to build momentum.",
+                "affirmation": "I am capable, resilient, and unstoppable."
+            }
+    except Exception as e:
+        return {"error": str(e)}
+
+# -------- Old endpoint (kept for compatibility) --------
 @app.post("/lifecoach")
 async def lifecoach(request: Request):
-    try:
-        data = await request.json()
-        name = data.get("name", "Friend")
-        mood = data.get("mood", "Neutral")
+    data = await request.json()
+    name = data.get("name", "Friend")
+    mood = data.get("mood", "Neutral")
 
+    prompt = f"""
+    You are LifeCoachGPT. Give motivational output for someone named {name} who is feeling {mood}.
+    Respond in JSON with:
+    - insight: short life insight
+    - micro_challenge: small action they can take now
+    - affirmation: positive affirmation
+    """
+    result = get_gemini_json(prompt)
+    return JSONResponse(content=result, status_code=200)
+
+# -------- New endpoint for Mode Switch --------
+@app.post("/advice")
+async def advice(request: Request):
+    data = await request.json()
+    mode = data.get("mode", "Daily Boost")
+    name = data.get("name", "Friend")
+
+    if mode == "Daily Boost":
+        mood = data.get("mood", "Neutral")
         prompt = f"""
         You are LifeCoachGPT. Give motivational output for someone named {name} who is feeling {mood}.
         Respond in JSON with:
@@ -47,69 +87,18 @@ async def lifecoach(request: Request):
         - micro_challenge: small action they can take now
         - affirmation: positive affirmation
         """
-
-        model = genai.GenerativeModel("gemini-2.0-flash")
-        resp = model.generate_content(prompt)
-        text_output = resp.candidates[0].content.parts[0].text
-
-        # Parse safely
-        try:
-            motivation = json.loads(text_output)
-        except:
-            motivation = {
-                "insight": "Keep pushing forward — progress builds momentum.",
-                "micro_challenge": "Do one small task right now to build momentum.",
-                "affirmation": "I am capable, resilient, and unstoppable."
-            }
-
-        return JSONResponse(content=motivation)
-
-    except Exception as e:
-        return JSONResponse(content={"error": str(e)}, status_code=500)
-
-
-# =============================
-# Custom Advice Endpoint
-# =============================
-@app.post("/advice")
-async def advice(request: Request):
-    try:
-        data = await request.json()
-        name = data.get("name", "Friend")
-        mood = data.get("mood", "Neutral")
-        topic = data.get("topic", "general life advice")
-
+    else:  # Custom Advice
+        topic = data.get("topic", "self-improvement")
         prompt = f"""
-        You are LifeCoachGPT. {name} is feeling {mood}.
-        They want custom advice about: {topic}.
+        You are LifeCoachGPT. Give personalized advice on {topic} for someone named {name}.
         Respond in JSON with:
-        - advice: 2-3 sentence personalized advice
-        - action_steps: 2-3 bullet points of actionable steps
-        - encouragement: short encouraging message
+        - insight: short insight about the topic
+        - micro_challenge: small actionable step they can take now
+        - affirmation: short encouraging affirmation
         """
 
-        model = genai.GenerativeModel("gemini-2.0-flash")
-        resp = model.generate_content(prompt)
-        text_output = resp.candidates[0].content.parts[0].text
-
-        try:
-            advice_data = json.loads(text_output)
-        except:
-            advice_data = {
-                "advice": "Focus on one step at a time, and don't overwhelm yourself.",
-                "action_steps": [
-                    "Take a short break to clear your mind",
-                    "Write down your top 3 priorities",
-                    "Start with the smallest task"
-                ],
-                "encouragement": "You are stronger than you think!"
-            }
-
-        return JSONResponse(content=advice_data)
-
-    except Exception as e:
-        return JSONResponse(content={"error": str(e)}, status_code=500)
-
+    result = get_gemini_json(prompt)
+    return JSONResponse(content=result, status_code=200)
 
 # =============================
 # Run with: uvicorn main:app --reload
