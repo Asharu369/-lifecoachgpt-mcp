@@ -19,62 +19,61 @@ HISTORY_FILE = "mood_history.csv"
 if os.path.exists(HISTORY_FILE):
     history_df = pd.read_csv(HISTORY_FILE)
 else:
-    history_df = pd.DataFrame(columns=["date", "name", "mode", "mood", "topic", "insight", "challenge", "affirmation"])
+    history_df = pd.DataFrame(columns=["date", "name", "mood", "insight", "challenge", "affirmation"])
 
 # ------------------------
-# Streak Counter Logic
+# Streak Counter
 # ------------------------
 def calculate_streak(df):
     if df.empty:
         return 0
     df_sorted = df.sort_values("date", ascending=False)
-    dates = [datetime.strptime(d, "%Y-%m-%d %H:%M") for d in df_sorted["date"]]
-    streak = 1
-    for i in range(1, len(dates)):
-        if (dates[i-1] - dates[i]).days == 1:
+    dates = pd.to_datetime(df_sorted["date"]).dt.date.unique()
+    today = datetime.now().date()
+    streak = 0
+    for i, d in enumerate(dates):
+        if d == today - timedelta(days=i):
             streak += 1
-        elif (dates[i-1] - dates[i]).days > 1:
+        else:
             break
     return streak
 
 streak_count = calculate_streak(history_df)
-st.metric("🔥 Current Streak", f"{streak_count} days")
+st.markdown(f"🔥 **Current Streak:** {streak_count} day{'s' if streak_count != 1 else ''}")
 
 # ------------------------
-# Mode Switch
+# Inputs
 # ------------------------
-mode = st.radio("Choose Mode", ["Daily Boost", "Custom Advice"])
-
 name = st.text_input("What's your name?")
-
-mood = ""
-topic = ""
-if mode == "Daily Boost":
-    mood = st.selectbox(
-        "How are you feeling right now?",
-        ["Happy", "Sad", "Motivated", "Stressed", "Neutral", "Excited", "Tired"]
-    )
-else:
-    topic = st.text_area("What topic do you want advice on?")
+mood = st.selectbox(
+    "How are you feeling right now?",
+    ["Happy", "Sad", "Motivated", "Stressed", "Neutral", "Excited", "Tired"]
+)
+mode = st.radio("Choose Mode", ["Daily Boost", "Custom Advice"])
 
 # ------------------------
 # Generate Advice
 # ------------------------
-if st.button("🚀 Get Advice"):
+if st.button("🚀 Get Motivation"):
     if not name.strip():
         st.warning("Please enter your name.")
-    elif mode == "Custom Advice" and not topic.strip():
-        st.warning("Please enter a topic for custom advice.")
     else:
         try:
-            backend_url = "https://lifecoachgpt-mcp.onrender.com/advice"
-            payload = {
-                "name": name,
-                "mood": mood,
-                "topic": topic,
-                "mode": "daily" if mode == "Daily Boost" else "custom"
-            }
-            response = requests.post(backend_url, json=payload)
+            backend_url_advice = "https://lifecoachgpt-mcp.onrender.com/advice"
+            backend_url_old = "https://lifecoachgpt-mcp.onrender.com/lifecoach"
+
+            payload = {"mode": mode, "name": name, "mood": mood}
+
+            # Try new /advice endpoint first
+            try:
+                response = requests.post(backend_url_advice, json=payload, timeout=10)
+            except requests.RequestException:
+                response = None
+
+            # Fallback to /lifecoach if needed
+            if not response or response.status_code != 200:
+                payload_fallback = {"name": name, "mood": mood}
+                response = requests.post(backend_url_old, json=payload_fallback, timeout=10)
 
             if response.status_code == 200:
                 data = response.json()
@@ -97,9 +96,7 @@ if st.button("🚀 Get Advice"):
                 new_entry = pd.DataFrame([{
                     "date": today,
                     "name": name,
-                    "mode": mode,
                     "mood": mood,
-                    "topic": topic,
                     "insight": insight,
                     "challenge": challenge,
                     "affirmation": affirmation
@@ -109,7 +106,7 @@ if st.button("🚀 Get Advice"):
 
                 # Update streak
                 streak_count = calculate_streak(history_df)
-                st.metric("🔥 Current Streak", f"{streak_count} days")
+                st.markdown(f"🔥 **Updated Streak:** {streak_count} day{'s' if streak_count != 1 else ''}")
 
             else:
                 st.error(f"Backend error: {response.text}")
@@ -117,9 +114,7 @@ if st.button("🚀 Get Advice"):
         except Exception as e:
             st.error(f"Error connecting to backend: {e}")
 
-# ------------------------
-# Quick Info
-# ------------------------
+
 
 # ------------------------
 # Mood History
