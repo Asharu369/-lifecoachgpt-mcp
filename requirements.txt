@@ -1,7 +1,9 @@
-fastapi 
-uvicorn 
-python-dotenv 
-requests 
-uvicorn 
-python-dotenv 
-requests 
+fastapi
+uvicorn
+python-dotenv
+requests
+flask
+google-generativeai
+pandas
+matplotlib
+
