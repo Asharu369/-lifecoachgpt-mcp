@@ -1,126 +1,104 @@
-import streamlit as st
-import requests
-import pandas as pd
-from datetime import datetime, timedelta
 import os
+import json
+from dotenv import load_dotenv
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+import google.generativeai as genai
 
-# =================================
-# Streamlit UI for LifeCoachGPT
-# =================================
-st.set_page_config(page_title="LifeCoachGPT", page_icon="🌟", layout="centered")
+# =============================
+# Load environment variables
+# =============================
+load_dotenv()
+GEMINI_KEY = os.getenv("GEMINI_API_KEY")
+if not GEMINI_KEY:
+    raise ValueError("GEMINI_API_KEY not found in .env file")
 
-st.title("🌟 LifeCoachGPT")
-st.markdown("Your daily 60s motivation — insight, micro-challenge, affirmation")
+genai.configure(api_key=GEMINI_KEY)
 
-# CSV for storing local mood history
-HISTORY_FILE = "mood_history.csv"
+# =============================
+# FastAPI app
+# =============================
+app = FastAPI(title="LifeCoachGPT API")
 
-# Load history if exists
-if os.path.exists(HISTORY_FILE):
-    history_df = pd.read_csv(HISTORY_FILE)
-else:
-    history_df = pd.DataFrame(columns=["date", "name", "mood", "insight", "challenge", "affirmation"])
-
-# ------------------------
-# Streak Counter
-# ------------------------
-def calculate_streak(df):
-    if df.empty:
-        return 0
-    df_sorted = df.sort_values("date", ascending=False)
-    dates = pd.to_datetime(df_sorted["date"]).dt.date.unique()
-    today = datetime.now().date()
-    streak = 0
-    for i, d in enumerate(dates):
-        if d == today - timedelta(days=i):
-            streak += 1
-        else:
-            break
-    return streak
-
-streak_count = calculate_streak(history_df)
-st.markdown(f"🔥 **Current Streak:** {streak_count} day{'s' if streak_count != 1 else ''}")
-
-# ------------------------
-# Inputs
-# ------------------------
-name = st.text_input("What's your name?")
-mood = st.selectbox(
-    "How are you feeling right now?",
-    ["Happy", "Sad", "Motivated", "Stressed", "Neutral", "Excited", "Tired"]
+# -------- Enable CORS --------
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allow all HTTP methods
+    allow_headers=["*"],  # Allow all headers
 )
-mode = st.radio("Choose Mode", ["Daily Boost", "Custom Advice"])
 
-# ------------------------
-# Generate Advice
-# ------------------------
-if st.button("🚀 Get Motivation"):
-    if not name.strip():
-        st.warning("Please enter your name.")
-    else:
+# -------- Helper: call Gemini and ensure JSON output --------
+def get_gemini_json(prompt: str):
+    try:
+        model = genai.GenerativeModel("gemini-2.0-flash")
+        resp = model.generate_content(prompt)
+        text_output = resp.candidates[0].content.parts[0].text
+
         try:
-            backend_url_advice = "https://lifecoachgpt-mcp.onrender.com/advice"
-            backend_url_old = "https://lifecoachgpt-mcp.onrender.com/lifecoach"
-
-            payload = {"mode": mode, "name": name, "mood": mood}
-
-            # Try new /advice endpoint first
-            try:
-                response = requests.post(backend_url_advice, json=payload, timeout=10)
-            except requests.RequestException:
-                response = None
-
-            # Fallback to /lifecoach if needed
-            if not response or response.status_code != 200:
-                payload_fallback = {"name": name, "mood": mood}
-                response = requests.post(backend_url_old, json=payload_fallback, timeout=10)
-
-            if response.status_code == 200:
-                data = response.json()
-
-                insight = data.get("insight", "No insight received.")
-                challenge = data.get("micro_challenge", "No challenge received.")
-                affirmation = data.get("affirmation", "No affirmation received.")
-
-                st.subheader("📜 Life Insight")
-                st.write(insight)
-
-                st.subheader("🎯 Micro Challenge")
-                st.write(challenge)
-
-                st.subheader("💖 Affirmation")
-                st.success(affirmation)
-
-                # Save to history
-                today = datetime.now().strftime("%Y-%m-%d %H:%M")
-                new_entry = pd.DataFrame([{
-                    "date": today,
-                    "name": name,
-                    "mood": mood,
-                    "insight": insight,
-                    "challenge": challenge,
-                    "affirmation": affirmation
-                }])
-                history_df = pd.concat([history_df, new_entry], ignore_index=True)
-                history_df.to_csv(HISTORY_FILE, index=False)
-
-                # Update streak
-                streak_count = calculate_streak(history_df)
-                st.markdown(f"🔥 **Updated Streak:** {streak_count} day{'s' if streak_count != 1 else ''}")
-
-            else:
-                st.error(f"Backend error: {response.text}")
-
-        except Exception as e:
-            st.error(f"Error connecting to backend: {e}")
+            return json.loads(text_output)
+        except json.JSONDecodeError:
+            # fallback
+            return {
+                "insight": "Keep pushing forward — progress builds momentum.",
+                "micro_challenge": "Do one small task right now to build momentum.",
+                "affirmation": "I am capable, resilient, and unstoppable."
+            }
+    except Exception as e:
+        return {"error": str(e)}
 
 
+# -------- Old endpoint (kept for compatibility) --------
+@app.post("/lifecoach")
+async def lifecoach(request: Request):
+    data = await request.json()
+    name = data.get("name", "Friend")
+    mood = data.get("mood", "Neutral")
 
-# ------------------------
-# Mood History
-# ------------------------
-st.subheader("📊 Your History")
-if history_df.empty:
-    st.write("No history yet — generate your first dose!")
-else:
-    st.dataframe(history_df.tail(10), use_container_width=True)
+    prompt = f"""
+    You are LifeCoachGPT. Give motivational output for someone named {name} who is feeling {mood}.
+    Respond in JSON with:
+    - insight: short life insight
+    - micro_challenge: small action they can take now
+    - affirmation: positive affirmation
+    """
+    return JSONResponse(content=get_gemini_json(prompt))
+
+
+# -------- New endpoint for Mode Switch --------
+@app.post("/advice")
+async def advice(request: Request):
+    data = await request.json()
+    mode = data.get("mode", "Daily Boost")
+    name = data.get("name", "Friend")
+
+    if mode == "Daily Boost":
+        mood = data.get("mood", "Neutral")
+        prompt = f"""
+        You are LifeCoachGPT. Give motivational output for someone named {name} who is feeling {mood}.
+        Respond in JSON with:
+        - insight: short life insight
+        - micro_challenge: small action they can take now
+        - affirmation: positive affirmation
+        """
+    else:  # Custom Advice
+        topic = data.get("topic", "self-improvement")
+        prompt = f"""
+        You are LifeCoachGPT. Give personalized advice on {topic} for someone named {name}.
+        Respond in JSON with:
+        - insight: short insight about the topic
+        - micro_challenge: small actionable step they can take now
+        - affirmation: short encouraging affirmation
+        """
+
+    return JSONResponse(content=get_gemini_json(prompt))
+
+
+# =============================
+# Run with: uvicorn app:app --reload
+# =============================
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
