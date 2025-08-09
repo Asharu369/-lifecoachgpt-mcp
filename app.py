@@ -1,76 +1,131 @@
 import streamlit as st
+import requests
 import pandas as pd
-import datetime
+from datetime import datetime, timedelta
 import os
 
-# ============ PAGE CONFIG ============
-st.set_page_config(
-    page_title="LifeCoachGPT",
-    page_icon="🌟",
-    layout="centered",
-    initial_sidebar_state="expanded"
-)
+# =================================
+# Streamlit UI for LifeCoachGPT
+# =================================
+st.set_page_config(page_title="LifeCoachGPT", page_icon="🌟", layout="centered")
 
-st.title("🌟 LifeCoachGPT – Your AI Coach")
-st.write("Get personalized insights, challenges, and affirmations.")
+st.title("🌟 LifeCoachGPT")
+st.markdown("Your daily 60s motivation — insight, micro-challenge, affirmation")
 
-# ============ MOOD TRACKING ============
-MOOD_FILE = "mood_tracking.csv"
+# CSV for storing local mood history
+HISTORY_FILE = "mood_history.csv"
 
-def load_mood_data():
-    if os.path.exists(MOOD_FILE):
-        return pd.read_csv(MOOD_FILE)
+# Load history if exists
+if os.path.exists(HISTORY_FILE):
+    history_df = pd.read_csv(HISTORY_FILE)
+else:
+    history_df = pd.DataFrame(columns=["date", "name", "mode", "mood", "topic", "insight", "challenge", "affirmation"])
+
+# ------------------------
+# Streak Counter Logic
+# ------------------------
+def calculate_streak(df):
+    if df.empty:
+        return 0
+    df_sorted = df.sort_values("date", ascending=False)
+    dates = [datetime.strptime(d, "%Y-%m-%d %H:%M") for d in df_sorted["date"]]
+    streak = 1
+    for i in range(1, len(dates)):
+        if (dates[i-1] - dates[i]).days == 1:
+            streak += 1
+        elif (dates[i-1] - dates[i]).days > 1:
+            break
+    return streak
+
+streak_count = calculate_streak(history_df)
+st.metric("🔥 Current Streak", f"{streak_count} days")
+
+# ------------------------
+# Mode Switch
+# ------------------------
+mode = st.radio("Choose Mode", ["Daily Boost", "Custom Advice"])
+
+name = st.text_input("What's your name?")
+
+mood = ""
+topic = ""
+if mode == "Daily Boost":
+    mood = st.selectbox(
+        "How are you feeling right now?",
+        ["Happy", "Sad", "Motivated", "Stressed", "Neutral", "Excited", "Tired"]
+    )
+else:
+    topic = st.text_area("What topic do you want advice on?")
+
+# ------------------------
+# Generate Advice
+# ------------------------
+if st.button("🚀 Get Advice"):
+    if not name.strip():
+        st.warning("Please enter your name.")
+    elif mode == "Custom Advice" and not topic.strip():
+        st.warning("Please enter a topic for custom advice.")
     else:
-        return pd.DataFrame(columns=["date", "mood"])
+        try:
+            backend_url = "https://lifecoachgpt-mcp.onrender.com/advice"
+            payload = {
+                "name": name,
+                "mood": mood,
+                "topic": topic,
+                "mode": "daily" if mode == "Daily Boost" else "custom"
+            }
+            response = requests.post(backend_url, json=payload)
 
-def save_mood(mood):
-    data = load_mood_data()
-    today = datetime.date.today().isoformat()
-    new_entry = pd.DataFrame([[today, mood]], columns=["date", "mood"])
-    data = pd.concat([data, new_entry], ignore_index=True)
-    data.to_csv(MOOD_FILE, index=False)
+            if response.status_code == 200:
+                data = response.json()
 
-st.sidebar.header("📅 Mood Tracker")
-mood = st.sidebar.selectbox(
-    "How are you feeling today?",
-    ["😊 Happy", "😐 Neutral", "😔 Sad", "😡 Angry", "😴 Tired"]
-)
+                insight = data.get("insight", "No insight received.")
+                challenge = data.get("micro_challenge", "No challenge received.")
+                affirmation = data.get("affirmation", "No affirmation received.")
 
-if st.sidebar.button("Save Mood"):
-    save_mood(mood)
-    st.sidebar.success("Mood saved!")
+                st.subheader("📜 Life Insight")
+                st.write(insight)
 
-mood_data = load_mood_data()
-if not mood_data.empty:
-    st.sidebar.subheader("Mood History")
-    st.sidebar.line_chart(mood_data.set_index("date"))
+                st.subheader("🎯 Micro Challenge")
+                st.write(challenge)
 
-# ============ MAIN CHAT INTERFACE ============
-with st.form("life_coach_form"):
-    user_input = st.text_area("💬 What's on your mind today?", "")
-    submitted = st.form_submit_button("Get Coaching")
+                st.subheader("💖 Affirmation")
+                st.success(affirmation)
 
-if submitted and user_input.strip():
-    # Here we simulate AI output (replace with API call to your FastAPI backend if needed)
-    st.success("✅ Coaching Results")
-    
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.markdown("### 💡 Insight")
-        st.info(f"Based on your input, you may want to focus on {user_input.lower()}.")
+                # Save to history
+                today = datetime.now().strftime("%Y-%m-%d %H:%M")
+                new_entry = pd.DataFrame([{
+                    "date": today,
+                    "name": name,
+                    "mode": mode,
+                    "mood": mood,
+                    "topic": topic,
+                    "insight": insight,
+                    "challenge": challenge,
+                    "affirmation": affirmation
+                }])
+                history_df = pd.concat([history_df, new_entry], ignore_index=True)
+                history_df.to_csv(HISTORY_FILE, index=False)
 
-    with col2:
-        st.markdown("### 🎯 Micro-Challenge")
-        st.warning("Take 5 minutes to write down your top 3 priorities for today.")
+                # Update streak
+                streak_count = calculate_streak(history_df)
+                st.metric("🔥 Current Streak", f"{streak_count} days")
 
-    with col3:
-        st.markdown("### 🌈 Affirmation")
-        st.success("You are capable, resilient, and ready to grow.")
+            else:
+                st.error(f"Backend error: {response.text}")
 
-# Reset button
-if st.button("🔄 Reset"):
-    st.experimental_rerun()
+        except Exception as e:
+            st.error(f"Error connecting to backend: {e}")
 
-st.markdown("---")
+# ------------------------
+# Quick Info
+# ------------------------
 
-
+# ------------------------
+# Mood History
+# ------------------------
+st.subheader("📊 Your History")
+if history_df.empty:
+    st.write("No history yet — generate your first dose!")
+else:
+    st.dataframe(history_df.tail(10), use_container_width=True)
