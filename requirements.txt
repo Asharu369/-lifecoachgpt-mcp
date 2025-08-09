@@ -6,4 +6,6 @@ flask
 google-generativeai
 pandas
 matplotlib
+streamlit
+
 
