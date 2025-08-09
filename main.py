@@ -1,12 +1,10 @@
 import os
+import re
 import json
-import pandas as pd
-import matplotlib.pyplot as plt
-from datetime import datetime
-from flask import Flask, request, jsonify
 from dotenv import load_dotenv
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 import google.generativeai as genai
-import streamlit as st
 
 # =============================
 # Load environment variables
@@ -19,125 +17,93 @@ if not GEMINI_KEY:
 genai.configure(api_key=GEMINI_KEY)
 
 # =============================
-# Flask API for Puch AI
+# FastAPI app
 # =============================
-app = Flask(__name__)
+app = FastAPI(title="LifeCoachGPT API")
 
-@app.route("/lifecoach", methods=["POST"])
-def lifecoach():
+# -----------------------------
+# Helper: Parse JSON Safely & Normalize Keys
+# -----------------------------
+def safe_parse_json(text_output, fallback):
+    """
+    Extracts first valid JSON from string, parses it, normalizes keys to lowercase.
+    Returns fallback dict if parsing fails.
+    """
     try:
-        data = request.get_json()
+        match = re.search(r"\{.*\}", text_output, re.DOTALL)
+        if match:
+            parsed = json.loads(match.group())
+            return {k.lower(): v for k, v in parsed.items()}
+        return fallback
+    except Exception:
+        return fallback
+
+# -----------------------------
+# Combined Advice Endpoint
+# -----------------------------
+@app.post("/advice")
+async def advice(request: Request):
+    try:
+        data = await request.json()
         name = data.get("name", "Friend")
+        mode = data.get("mode", "daily").lower()
         mood = data.get("mood", "Neutral")
+        topic = data.get("topic", "")
 
-        prompt = f"""
-        You are LifeCoachGPT. Give motivational output for someone named {name} who is feeling {mood}.
-        Respond in JSON with:
-        - insight: short life insight
-        - micro_challenge: small action they can take now
-        - affirmation: positive affirmation
-        """
+        if mode not in ["daily", "custom"]:
+            return JSONResponse(content={"error": "Invalid mode. Use 'daily' or 'custom'."}, status_code=400)
 
-        model = genai.GenerativeModel("gemini-2.0-flash")
-        resp = model.generate_content(prompt)
-        text_output = resp.candidates[0].content.parts[0].text
+        if mode == "custom" and not topic.strip():
+            return JSONResponse(content={"error": "Please provide a topic for custom advice."}, status_code=400)
 
-        # Try to parse JSON safely
-        try:
-            motivation = json.loads(text_output)
-        except:
-            motivation = {
+        # Create prompt based on mode
+        if mode == "daily":
+            prompt = f"""
+            You are LifeCoachGPT. Give motivational output for someone named {name} who is feeling {mood}.
+            Respond ONLY in valid JSON format:
+            {{
+                "insight": "...",
+                "micro_challenge": "...",
+                "affirmation": "..."
+            }}
+            """
+            fallback = {
                 "insight": "Keep pushing forward — progress builds momentum.",
                 "micro_challenge": "Do one small task right now to build momentum.",
                 "affirmation": "I am capable, resilient, and unstoppable."
             }
+        else:  # custom mode
+            prompt = f"""
+            You are LifeCoachGPT. {name} is asking for advice on: "{topic}".
+            Respond ONLY in valid JSON format:
+            {{
+                "insight": "...",
+                "micro_challenge": "...",
+                "affirmation": "..."
+            }}
+            """
+            fallback = {
+                "insight": "Your growth begins with the first step toward your goal.",
+                "micro_challenge": "Write down one specific action to take today.",
+                "affirmation": "I am moving closer to my dreams each day."
+            }
 
-        return jsonify(motivation)
+        # Call Gemini
+        model = genai.GenerativeModel("gemini-2.0-flash")
+        resp = model.generate_content(prompt)
+        text_output = resp.candidates[0].content.parts[0].text
+
+        advice_data = safe_parse_json(text_output, fallback)
+
+        return JSONResponse(content=advice_data)
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
 
 # =============================
-# Streamlit UI
-# =============================
-def run_streamlit():
-    st.set_page_config(page_title="LifeCoachGPT", layout="wide")
-    st.markdown("<h1 style='color:#ff4b4b;'>🌟 LifeCoachGPT — Your Daily Dose of Motivation</h1>", unsafe_allow_html=True)
-
-    col1, col2 = st.columns(2)
-    with col1:
-        name = st.text_input("Your Name", "Asharu")
-        mood = st.selectbox("How are you feeling today?", ["Happy", "Sad", "Motivated", "Stressed", "Tired", "Excited"])
-    with col2:
-        st.markdown("### 💡 Daily Tip: Even small actions create big momentum!")
-
-    if st.button("🚀 Give me my daily dose"):
-        payload = {"name": name, "mood": mood}
-        with st.spinner("Fetching your motivation..."):
-            model = genai.GenerativeModel("gemini-2.0-flash")
-            resp = model.generate_content(f"""
-            You are LifeCoachGPT. Give motivational output for {name} who is feeling {mood}.
-            Respond in JSON with insight, micro_challenge, and affirmation.
-            """)
-            try:
-                motivation = json.loads(resp.candidates[0].content.parts[0].text)
-            except:
-                motivation = {
-                    "insight": "Keep pushing forward — progress builds momentum.",
-                    "micro_challenge": "Do one small task right now to build momentum.",
-                    "affirmation": "I am capable, resilient, and unstoppable."
-                }
-
-        # Display sections with colors & icons
-        st.success(f"💡 Insight: {motivation['insight']}")
-        st.info(f"🎯 Micro-Challenge: {motivation['micro_challenge']}")
-        st.warning(f"🌈 Affirmation: {motivation['affirmation']}")
-
-        # Save to mood history
-        log_mood(name, mood, motivation)
-
-    # Reset button
-    if st.button("🔄 Reset"):
-        st.experimental_rerun()
-
-    # Show history
-    if os.path.exists("mood_history.csv"):
-        st.subheader("📅 Your Mood & Motivation History")
-        df = pd.read_csv("mood_history.csv")
-        st.dataframe(df)
-
-        # Chart: mood trends
-        fig, ax = plt.subplots()
-        df["Date"] = pd.to_datetime(df["Date"])
-        mood_counts = df.groupby("Mood").size()
-        mood_counts.plot(kind="bar", ax=ax, color="skyblue")
-        plt.title("Mood Frequency Over Time")
-        st.pyplot(fig)
-
-# =============================
-# Mood history helper
-# =============================
-def log_mood(name, mood, motivation):
-    entry = {
-        "Date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "Name": name,
-        "Mood": mood,
-        "Insight": motivation["insight"],
-        "MicroChallenge": motivation["micro_challenge"],
-        "Affirmation": motivation["affirmation"]
-    }
-    df = pd.DataFrame([entry])
-    if os.path.exists("mood_history.csv"):
-        df.to_csv("mood_history.csv", mode="a", header=False, index=False)
-    else:
-        df.to_csv("mood_history.csv", index=False)
-
-# =============================
-# Run locally
+# Run with: uvicorn main:app --reload
 # =============================
 if __name__ == "__main__":
-    import sys
-    if "streamlit" in sys.argv:
-        run_streamlit()
-    else:
-        app.run(host="0.0.0.0", port=5000)
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
