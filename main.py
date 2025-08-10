@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 import requests
 from fastapi import FastAPI, Body, HTTPException, Request
+from fastapi import Header
 
 
 # Load env
@@ -169,60 +170,39 @@ async def tools_validate(payload: Dict[str, Any] = Body(...)):
     logger.warning("Validation failed for token prefix=%s", token[:8] if token else "<empty>")
     raise HTTPException(status_code=401, detail="Invalid validation token")
 
-@app.post("/tools/advice", response_model=AdviceResponse)
-async def tools_advice(request: Request, payload: AdviceRequest = Body(...)):
-    # quick debug: log whether an Authorization header arrived (only show small prefix)
-    auth = request.headers.get("Authorization", "")
-    auth_prefix = auth.split(" ", 1)[1].strip()[:8] if auth and " " in auth else (auth[:8] if auth else "<empty>")
-    logger.info("TOOLS_ADVICE called — auth_prefix=%s prompt_len=%d", auth_prefix, len((payload.prompt or "").strip()))
-
-    prompt = (payload.prompt or "").strip()
-    tone = (payload.tone or "empathetic").strip()
-    length = (payload.length or "short").strip()
-    if not prompt:
-        raise HTTPException(status_code=400, detail="Missing prompt")
-
-    logger.info("Advice requested (tone=%s length=%s prompt_len=%d)", tone, length, len(prompt))
-    instruction = build_instruction(prompt, tone=tone, length=length)
-
+@app.post("/tools/advice")
+def advice(req: AdviceRequest):
     try:
-        if GEMINI_API_KEY:
-            resp_json = call_gemini_http(instruction)
-            raw_text = extract_text_from_gemini(resp_json)
-            parsed = parse_motivation_text(raw_text)
-            advice_text = (
-                f"Insight: {parsed['insight']}\nMicro-Challenge: {parsed['micro_challenge']}\nAffirmation: {parsed['affirmation']}"
-                if (parsed.get("insight") or parsed.get("micro_challenge") or parsed.get("affirmation"))
-                else raw_text
-            )
-            return AdviceResponse(advice=advice_text)
-        else:
-            if DEMO_MODE:
-                return AdviceResponse(advice=demo_advice(prompt))
-            raise HTTPException(status_code=503, detail="Gemini API key not configured and DEMO_MODE disabled")
-    except requests.exceptions.RequestException as re:
-        logger.exception("RequestException calling Gemini: %s", re)
-        if DEMO_MODE:
-            return AdviceResponse(advice=demo_advice(prompt))
-        raise HTTPException(status_code=502, detail=f"Upstream error: {re}")
+        final_prompt = (
+            f"You are LifeCoachGPT — a friendly coach.\n"
+            f"Tone: {req.tone}\nLength: {req.length}\n"
+            f"Prompt: {req.prompt}\n\n"
+            f"Return JSON with fields: Insight, Micro-Challenge, Affirmation."
+        )
+
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
+        
+        payload = {
+            "contents": [
+                {
+                    "parts": [
+                        {"text": final_prompt}
+                    ]
+                }
+            ]
+        }
+
+        resp = requests.post(url, json=payload, timeout=15)
+        if resp.status_code != 200:
+            raise HTTPException(status_code=resp.status_code, detail=resp.text)
+
+        data = resp.json()
+        # Gemini's text output is usually nested like this:
+        advice_text = data["candidates"][0]["content"]["parts"][0]["text"]
+        return {"advice": advice_text}
+
     except Exception as e:
-        logger.exception("Unhandled error in tools_advice: %s", e)
-        if DEMO_MODE:
-            return AdviceResponse(advice=advice_text)
-        else:
-            if DEMO_MODE:
-                return AdviceResponse(advice=demo_advice(prompt))
-            raise HTTPException(status_code=503, detail="Gemini API key not configured and DEMO_MODE disabled")
-    except requests.exceptions.RequestException as re:
-        logger.exception("RequestException calling Gemini: %s", re)
-        if DEMO_MODE:
-            return AdviceResponse(advice=demo_advice(prompt))
-        raise HTTPException(status_code=502, detail=f"Upstream error: {re}")
-    except Exception as e:
-        logger.exception("Unhandled error in tools_advice: %s", e)
-        if DEMO_MODE:
-            return AdviceResponse(advice=demo_advice(prompt))
-        raise HTTPException(status_code=500, detail="Internal error generating advice")
+        raise HTTPException(status_code=500, detail=f"Advice generation error: {e}")
 
 @app.get("/")
 async def root():
