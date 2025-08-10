@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Backend URL: prefer env var BACKEND_URL; fall back to localhost (for local dev)
-BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8000").strip()
+BACKEND_URL = os.getenv("BACKEND_URL", "https://lifecoachgpt-mcp.onrender.com").strip()
 CSV_FILE = os.getenv("CSV_FILE", "mood_history.csv")
 DEBUG = os.getenv("DEBUG", "false").lower() in ("1", "true", "yes")
 DEMO_MODE = os.getenv("DEMO_MODE", "false").lower() in ("1", "true", "yes")
