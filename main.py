@@ -3,22 +3,19 @@ import json
 import logging
 from typing import Dict, Any, Optional
 
-from fastapi import FastAPI, Body, HTTPException
+from fastapi import FastAPI, Body, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 import requests
-from fastapi import FastAPI, Body, HTTPException, Request
-from fastapi import Header
-
 
 # Load env
 load_dotenv()
 
-GEMINI_API_KEY = os.getenv("GEMINI_PRO_API_KEY", "").strip()
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash").strip()
 VALIDATION_TOKEN = os.getenv("VALIDATION_TOKEN", "").strip()
-PHONE_NUMBER = os.getenv("PHONE_NUMBER", "").strip()  # digits-only, e.g. 919876543210
+PHONE_NUMBER = os.getenv("PHONE_NUMBER", "").strip()
 DEMO_MODE = os.getenv("DEMO_MODE", "false").lower() in ("1", "true", "yes")
 DEBUG = os.getenv("DEBUG", "false").lower() in ("1", "true", "yes")
 
@@ -30,7 +27,7 @@ logger = logging.getLogger("lifecoachgpt")
 app = FastAPI(title="Life Coach GPT - MCP Server")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # tighten in production
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
     allow_credentials=True,
@@ -45,71 +42,7 @@ class AdviceRequest(BaseModel):
 class AdviceResponse(BaseModel):
     advice: str
 
-# Helpers (same parsing logic as frontend)
-def extract_text_from_gemini(resp_json: Dict[str, Any]) -> str:
-    try:
-        if not isinstance(resp_json, dict):
-            return json.dumps(resp_json)
-        candidates = resp_json.get("candidates") or (resp_json.get("results", [{}])[0].get("candidates") if "results" in resp_json else None)
-        if candidates and isinstance(candidates, list):
-            cand0 = candidates[0] or {}
-            if isinstance(cand0, dict):
-                for key in ("output", "text"):
-                    if key in cand0:
-                        return cand0[key]
-                if "content" in cand0:
-                    content = cand0["content"]
-                    if isinstance(content, dict):
-                        if "text" in content:
-                            return content["text"]
-                        parts = content.get("parts")
-                        if isinstance(parts, list) and parts:
-                            p = parts[0]
-                            if isinstance(p, dict) and "text" in p:
-                                return p["text"]
-        if "parts" in resp_json and isinstance(resp_json["parts"], list) and resp_json["parts"]:
-            p = resp_json["parts"][0]
-            if isinstance(p, dict) and "text" in p:
-                return p["text"]
-    except Exception:
-        pass
-    return json.dumps(resp_json)
-
-def parse_motivation_text(text: str) -> Dict[str, str]:
-    result = {"insight": "", "micro_challenge": "", "affirmation": "", "raw": text}
-    try:
-        parsed = json.loads(text)
-        if isinstance(parsed, dict):
-            result["insight"] = parsed.get("insight") or parsed.get("insight_text") or parsed.get("Insight") or ""
-            result["micro_challenge"] = parsed.get("micro_challenge") or parsed.get("challenge") or parsed.get("task") or ""
-            result["affirmation"] = parsed.get("affirmation") or parsed.get("affirm") or parsed.get("aff") or ""
-            return result
-    except Exception:
-        pass
-    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-    for ln in lines:
-        lnl = ln.lower()
-        if lnl.startswith("insight:") or ("insight" in lnl and ":" in ln):
-            result["insight"] = ln.split(":", 1)[-1].strip()
-        elif lnl.startswith("micro-challenge:") or ("micro" in lnl and "challenge" in lnl) or ("challenge" in lnl and ":" in ln):
-            result["micro_challenge"] = ln.split(":", 1)[-1].strip()
-        elif lnl.startswith("affirmation:") or ("affirm" in lnl and ":" in ln):
-            result["affirmation"] = ln.split(":", 1)[-1].strip()
-    if not result["insight"]:
-        paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
-        if paragraphs:
-            result["insight"] = paragraphs[0]
-    if not result["micro_challenge"]:
-        paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
-        if len(paragraphs) > 1:
-            result["micro_challenge"] = paragraphs[1]
-    if not result["affirmation"]:
-        if lines:
-            last = lines[-1]
-            if len(last) < 200:
-                result["affirmation"] = last
-    return result
-
+# Helpers
 def call_gemini_http(prompt_text: str, timeout: int = 25) -> Dict[str, Any]:
     if not GEMINI_API_KEY:
         raise RuntimeError("Gemini API key not configured.")
@@ -144,12 +77,13 @@ def build_instruction(prompt: str, tone: str = "empathetic", length: str = "shor
     )
 
 def demo_advice(prompt: str) -> str:
-    insight = "Small consistent actions beat large sporadic efforts — start with one tiny step."
-    challenge = "Set a timer for 2 minutes and perform one tiny action toward your goal now."
-    affirmation = "I move forward step by step."
-    return f"Insight: {insight}\nMicro-Challenge: {challenge}\nAffirmation: {affirmation}"
+    return (
+        "Insight: Small consistent actions beat large sporadic efforts — start with one tiny step.\n"
+        "Micro-Challenge: Set a timer for 2 minutes and perform one tiny action toward your goal now.\n"
+        "Affirmation: I move forward step by step."
+    )
 
-# Manifest (MCP)
+# Manifest
 @app.get("/mcp/manifest")
 async def manifest():
     return {
@@ -171,31 +105,32 @@ async def tools_validate(payload: Dict[str, Any] = Body(...)):
     raise HTTPException(status_code=401, detail="Invalid validation token")
 
 @app.post("/tools/advice")
-def advice(req: AdviceRequest):
-    final_prompt = (
-        f"You are LifeCoachGPT — a friendly coach.\n"
-        f"Tone: {req.tone}\nLength: {req.length}\n"
-        f"Prompt: {req.prompt}\n\n"
-        f"Return JSON with fields: Insight, Micro-Challenge, Affirmation."
-    )
+def advice(
+    req: AdviceRequest,
+    authorization: Optional[str] = Header(None)
+):
+    # Check bearer token if validation is enforced
+    if VALIDATION_TOKEN:
+        if not authorization or not authorization.startswith("Bearer "):
+            raise HTTPException(status_code=401, detail="Missing or invalid authorization header")
+        token = authorization.split(" ", 1)[1]
+        if token != VALIDATION_TOKEN:
+            raise HTTPException(status_code=403, detail="Forbidden: invalid token")
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
-    
-    payload = {
-        "contents": [
-            {
-                "parts": [
-                    {"text": final_prompt}
-                ]
-            }
-        ]
-    }
+    final_prompt = build_instruction(req.prompt, req.tone, req.length)
 
-    resp = requests.post(url, json=payload, timeout=15)
-    resp.raise_for_status()  # Raises if not 2xx
+    try:
+        if GEMINI_API_KEY:
+            data = call_gemini_http(final_prompt)
+            advice_text = data["candidates"][0]["content"]["parts"][0]["text"]
+        elif DEMO_MODE:
+            advice_text = demo_advice(req.prompt)
+        else:
+            raise RuntimeError("No model configured")
+    except Exception as e:
+        logger.exception("Error generating advice: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
 
-    data = resp.json()
-    advice_text = data["candidates"][0]["content"]["parts"][0]["text"]
     return {"advice": advice_text}
 
 @app.get("/")
@@ -211,7 +146,7 @@ async def chat(payload: Dict[str, Any] = Body(...)):
     try:
         if GEMINI_API_KEY:
             resp_json = call_gemini_http(instruction)
-            raw_text = extract_text_from_gemini(resp_json)
+            raw_text = resp_json["candidates"][0]["content"]["parts"][0]["text"]
             return {"response": raw_text}
         if DEMO_MODE:
             return {"response": demo_advice(q)}
