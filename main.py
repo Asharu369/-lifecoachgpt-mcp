@@ -172,37 +172,31 @@ async def tools_validate(payload: Dict[str, Any] = Body(...)):
 
 @app.post("/tools/advice")
 def advice(req: AdviceRequest):
-    try:
-        final_prompt = (
-            f"You are LifeCoachGPT — a friendly coach.\n"
-            f"Tone: {req.tone}\nLength: {req.length}\n"
-            f"Prompt: {req.prompt}\n\n"
-            f"Return JSON with fields: Insight, Micro-Challenge, Affirmation."
-        )
+    final_prompt = (
+        f"You are LifeCoachGPT — a friendly coach.\n"
+        f"Tone: {req.tone}\nLength: {req.length}\n"
+        f"Prompt: {req.prompt}\n\n"
+        f"Return JSON with fields: Insight, Micro-Challenge, Affirmation."
+    )
 
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
-        
-        payload = {
-            "contents": [
-                {
-                    "parts": [
-                        {"text": final_prompt}
-                    ]
-                }
-            ]
-        }
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
+    
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {"text": final_prompt}
+                ]
+            }
+        ]
+    }
 
-        resp = requests.post(url, json=payload, timeout=15)
-        if resp.status_code != 200:
-            raise HTTPException(status_code=resp.status_code, detail=resp.text)
+    resp = requests.post(url, json=payload, timeout=15)
+    resp.raise_for_status()  # Raises if not 2xx
 
-        data = resp.json()
-        # Gemini's text output is usually nested like this:
-        advice_text = data["candidates"][0]["content"]["parts"][0]["text"]
-        return {"advice": advice_text}
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Advice generation error: {e}")
+    data = resp.json()
+    advice_text = data["candidates"][0]["content"]["parts"][0]["text"]
+    return {"advice": advice_text}
 
 @app.get("/")
 async def root():
