@@ -2,7 +2,7 @@ fastapi
 uvicorn
 python-dotenv
 requests
-flask
+pydantic
 google-generativeai
 pandas
 matplotlib
