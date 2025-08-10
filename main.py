@@ -8,6 +8,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 import requests
+from fastapi import FastAPI, Body, HTTPException, Request
+
 
 # Load env
 load_dotenv()
@@ -168,14 +170,21 @@ async def tools_validate(payload: Dict[str, Any] = Body(...)):
     raise HTTPException(status_code=401, detail="Invalid validation token")
 
 @app.post("/tools/advice", response_model=AdviceResponse)
-async def tools_advice(payload: AdviceRequest = Body(...)):
+async def tools_advice(request: Request, payload: AdviceRequest = Body(...)):
+    # quick debug: log whether an Authorization header arrived (only show small prefix)
+    auth = request.headers.get("Authorization", "")
+    auth_prefix = auth.split(" ", 1)[1].strip()[:8] if auth and " " in auth else (auth[:8] if auth else "<empty>")
+    logger.info("TOOLS_ADVICE called — auth_prefix=%s prompt_len=%d", auth_prefix, len((payload.prompt or "").strip()))
+
     prompt = (payload.prompt or "").strip()
     tone = (payload.tone or "empathetic").strip()
     length = (payload.length or "short").strip()
     if not prompt:
         raise HTTPException(status_code=400, detail="Missing prompt")
+
     logger.info("Advice requested (tone=%s length=%s prompt_len=%d)", tone, length, len(prompt))
     instruction = build_instruction(prompt, tone=tone, length=length)
+
     try:
         if GEMINI_API_KEY:
             resp_json = call_gemini_http(instruction)
@@ -186,6 +195,19 @@ async def tools_advice(payload: AdviceRequest = Body(...)):
                 if (parsed.get("insight") or parsed.get("micro_challenge") or parsed.get("affirmation"))
                 else raw_text
             )
+            return AdviceResponse(advice=advice_text)
+        else:
+            if DEMO_MODE:
+                return AdviceResponse(advice=demo_advice(prompt))
+            raise HTTPException(status_code=503, detail="Gemini API key not configured and DEMO_MODE disabled")
+    except requests.exceptions.RequestException as re:
+        logger.exception("RequestException calling Gemini: %s", re)
+        if DEMO_MODE:
+            return AdviceResponse(advice=demo_advice(prompt))
+        raise HTTPException(status_code=502, detail=f"Upstream error: {re}")
+    except Exception as e:
+        logger.exception("Unhandled error in tools_advice: %s", e)
+        if DEMO_MODE:
             return AdviceResponse(advice=advice_text)
         else:
             if DEMO_MODE:
