@@ -1,4 +1,3 @@
-# app.py
 import os
 import json
 from datetime import datetime
@@ -17,13 +16,21 @@ BACKEND_URL = os.getenv("BACKEND_URL", "https://lifecoachgpt-mcp.onrender.com").
 CSV_FILE = os.getenv("CSV_FILE", "mood_history.csv")
 DEBUG = os.getenv("DEBUG", "false").lower() in ("1", "true", "yes")
 DEMO_MODE = os.getenv("DEMO_MODE", "false").lower() in ("1", "true", "yes")
+VALIDATION_TOKEN = os.getenv("VALIDATION_TOKEN", "").strip()
 
 def call_backend_advice(backend_url: str, prompt: str, tone: str = "empathetic", length: str = "short", timeout: int = 12):
     url = backend_url.rstrip("/") + "/tools/advice"
     payload = {"prompt": prompt, "tone": tone, "length": length}
-    r = requests.post(url, json=payload, timeout=timeout)
+    headers = {}
+    if VALIDATION_TOKEN:
+        headers["Authorization"] = f"Bearer {VALIDATION_TOKEN}"
+    r = requests.post(url, json=payload, headers=headers, timeout=timeout)
     r.raise_for_status()
     return r.json()
+
+# ... rest of your app unchanged ...
+# (keep parse_motivation_text, append_entry, load_history, Streamlit UI code, etc.)
+# for brevity reuse the same functions from your existing app.py
 
 def parse_motivation_text(text: str):
     # same parsing as backend
